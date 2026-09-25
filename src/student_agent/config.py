@@ -16,6 +16,14 @@ class Settings:
     team_api_key: str
     mcp_endpoint: str
     root: Path
+    gemini_api_key: str | None = None
+    openai_api_key: str | None = None
+    openai_base_url: str | None = None
+    primary_model: str = "gemini-2.5-flash"
+    fallback_model_1: str = "gemini-2.0-flash"
+    fallback_model_2: str = "gpt-4o-mini"
+    llm_timeout: float = 60.0
+    llm_temperature: float = 0.1
 
     @classmethod
     def load(cls, root: Path | None = None) -> Settings:
@@ -33,4 +41,35 @@ class Settings:
             errors.append("MCP_ENDPOINT must be an absolute HTTP(S) URL")
         if errors:
             raise ValueError("; ".join(errors))
-        return cls(api_url, team_key, mcp_endpoint, resolved_root)
+
+        gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip() or None
+        openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
+        openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        primary_model = os.getenv("PRIMARY_MODEL", "gemini-2.5-flash").strip()
+        fallback_model_1 = os.getenv("FALLBACK_MODEL_1", "gemini-2.0-flash").strip()
+        fallback_model_2 = os.getenv("FALLBACK_MODEL_2", "gpt-4o-mini").strip()
+
+        try:
+            llm_timeout = float(os.getenv("LLM_TIMEOUT", "60.0").strip())
+        except ValueError:
+            llm_timeout = 60.0
+
+        try:
+            llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.1").strip())
+        except ValueError:
+            llm_temperature = 0.1
+
+        return cls(
+            competition_api_url=api_url,
+            team_api_key=team_key,
+            mcp_endpoint=mcp_endpoint,
+            root=resolved_root,
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            primary_model=primary_model,
+            fallback_model_1=fallback_model_1,
+            fallback_model_2=fallback_model_2,
+            llm_timeout=llm_timeout,
+            llm_temperature=llm_temperature,
+        )
