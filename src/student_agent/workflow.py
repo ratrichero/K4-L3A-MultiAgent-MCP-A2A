@@ -63,7 +63,10 @@ async def solve_case(
     # 4. Stage 2: Order & Entity Verification
     order_finding = await order_agent.investigate(plan)
 
-    # 5. Stage 3: Parallel Domain Specialists (Payment & Shipment)
+    # 5. Stage 3: Sequential Domain Specialists (Payment & Shipment). The MCP
+    # EvidenceGateway uses a single streamable-HTTP ClientSession that is not
+    # safe for concurrent call_tool requests; running these sequentially keeps
+    # responses correctly associated and avoids cross-wired evidence/timeouts.
     if order_finding.found and order_finding.order_id:
         payment_finding = await payment_agent.investigate(case_id, order_finding.order_id)
         shipment_finding = await shipment_agent.investigate(case_id, order_finding.order_id)

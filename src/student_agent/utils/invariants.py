@@ -79,13 +79,18 @@ def map_draft_to_l3a_output(
     """Map internal DraftResolution into Day09 L3A public output schema."""
     enforce_invariants_and_reconcile(draft, ledger, case_id)
 
-    # Clean affected entities sets
+    # Clean affected entities sets. IDs sourced directly from MCP evidence may
+    # exceed the 128-character schema ceiling; clamp defensively so a single
+    # long token cannot fail schema validation for an otherwise valid case.
+    def _clean_ids(ids: list[str]) -> list[str]:
+        return sorted({str(i)[:128] for i in ids if i})[:20]
+
     entities = {
-        "order_ids": sorted(set(filter(None, draft.order_ids)))[:20],
-        "item_ids": sorted(set(filter(None, draft.item_ids)))[:20],
-        "seller_ids": sorted(set(filter(None, draft.seller_ids)))[:20],
-        "payment_references": sorted(set(filter(None, draft.payment_references)))[:20],
-        "shipment_ids": sorted(set(filter(None, draft.shipment_ids)))[:20],
+        "order_ids": _clean_ids(draft.order_ids),
+        "item_ids": _clean_ids(draft.item_ids),
+        "seller_ids": _clean_ids(draft.seller_ids),
+        "payment_references": _clean_ids(draft.payment_references),
+        "shipment_ids": _clean_ids(draft.shipment_ids),
     }
 
     # Clean refund lines
@@ -126,7 +131,15 @@ def map_draft_to_l3a_output(
         "affected_entities": entities,
         "root_cause_analysis": {
             "ranked_causes": draft.ranked_causes[:5],
-            "responsible_parties": draft.responsible_parties[:5],
+            "responsible_parties": [
+                {
+                    "party_type": party.get("party_type"),
+                    "party_id": (
+                        str(party["party_id"])[:128] if party.get("party_id") else None
+                    ),
+                }
+                for party in draft.responsible_parties
+            ][:5],
         },
         "evidence_refs": draft.evidence_refs,
         "data_conflicts": draft.data_conflicts[:5],
