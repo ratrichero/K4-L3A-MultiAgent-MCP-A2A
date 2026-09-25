@@ -83,6 +83,33 @@ class PolicySpecialistAgent:
         )
         order_id = order.order_id or plan.claimed_order_id
 
+        # Collect customer's claimed topics (excluding requested_full_refund which is an action)
+        claimed_topics = [
+            c.get("topic")
+            for c in plan.claims
+            if c.get("topic") and c.get("topic") != "requested_full_refund"
+        ]
+        target_claim = claimed_topics[0] if claimed_topics else None
+
+        # Authoritative facts from specialists
+        is_canceled_paid = order.status == "canceled" and payment.total_paid_brl > Decimal("0.00")
+        is_unavailable_paid = order.status == "unavailable" and payment.total_paid_brl > Decimal(
+            "0.00"
+        )
+        is_duplicate_charge = payment.has_duplicate_charge
+        is_refund_failed = payment.refund_status == "failed"
+        is_refund_pending = payment.refund_status == "pending"
+        is_late_seller = shipment.is_late_delivery and shipment.late_responsible_party == "seller"
+        is_late_logistics = (
+            shipment.is_late_delivery and shipment.late_responsible_party == "logistics_provider"
+        )
+        is_payment_mismatch = payment.has_payment_records and (
+            order.total_order_value_brl > Decimal("0.00")
+            and abs(payment.total_paid_brl - order.total_order_value_brl) > Decimal("0.05")
+        )
+        is_valid_split = payment.is_split_payment
+
+        # Determine primary issue
         if not order.found:
             primary_issue = "insufficient_evidence"
             case_status = "needs_investigation"
@@ -90,7 +117,9 @@ class PolicySpecialistAgent:
             responsible_parties.append({"party_type": "unknown", "party_id": None})
             resolution_actions.append("request_additional_order_info")
 
-        elif order.status == "canceled" and payment.total_paid_brl > Decimal("0.00"):
+        elif (target_claim == "canceled_order_paid" and is_canceled_paid) or (
+            target_claim is None and is_canceled_paid
+        ):
             primary_issue = "canceled_order_paid"
             case_status = "action_required"
             ranked_causes.append({"cause_code": "ORDER_CANCELED_BEFORE_FULFILLMENT", "rank": 1})
@@ -101,7 +130,9 @@ class PolicySpecialistAgent:
             )
             resolution_actions.extend(["process_full_refund", "notify_customer"])
 
-        elif order.status == "unavailable" and payment.total_paid_brl > Decimal("0.00"):
+        elif (target_claim == "unavailable_order_paid" and is_unavailable_paid) or (
+            target_claim is None and is_unavailable_paid
+        ):
             primary_issue = "unavailable_order_paid"
             case_status = "action_required"
             ranked_causes.append({"cause_code": "INVENTORY_OUT_OF_STOCK", "rank": 1})
@@ -112,7 +143,9 @@ class PolicySpecialistAgent:
             )
             resolution_actions.extend(["process_full_refund", "notify_seller_inventory"])
 
-        elif payment.has_duplicate_charge:
+        elif (target_claim == "duplicate_charge" and is_duplicate_charge) or (
+            target_claim is None and is_duplicate_charge
+        ):
             primary_issue = "duplicate_charge"
             case_status = "action_required"
             ranked_causes.append({"cause_code": "PAYMENT_GATEWAY_DUPLICATION", "rank": 1})
@@ -125,7 +158,9 @@ class PolicySpecialistAgent:
             )
             resolution_actions.extend(["reverse_duplicate_charge", "notify_customer"])
 
-        elif payment.refund_status == "failed":
+        elif (target_claim == "refund_failed" and is_refund_failed) or (
+            target_claim is None and is_refund_failed
+        ):
             primary_issue = "refund_failed"
             case_status = "action_required"
             ranked_causes.append({"cause_code": "REFUND_GATEWAY_REJECTED", "rank": 1})
@@ -135,39 +170,138 @@ class PolicySpecialistAgent:
             refund_lines.append(RefundLine("retry_failed_refund", refund_val, order_id))
             resolution_actions.extend(["retry_refund_transaction", "notify_customer"])
 
-        elif payment.refund_status == "pending":
+        elif (target_claim == "refund_pending" and is_refund_pending) or (
+            target_claim is None and is_refund_pending
+        ):
             primary_issue = "refund_pending"
             case_status = "no_action"
             ranked_causes.append({"cause_code": "REFUND_PROCESSING_SLA", "rank": 1})
             responsible_parties.append({"party_type": "platform", "party_id": "marketplace"})
             resolution_actions.append("advise_customer_banking_sla")
 
-        elif shipment.is_late_delivery:
-            if shipment.late_responsible_party == "seller":
-                primary_issue = "late_delivery_seller"
-                ranked_causes.append({"cause_code": "SELLER_HANDOFF_DELAY", "rank": 1})
-                responsible_parties.append({"party_type": "seller", "party_id": seller_id})
-                case_status = "action_required"
-                resolution_actions.extend(["issue_seller_warning", "notify_customer"])
-            else:
-                primary_issue = "late_delivery_logistics"
-                ranked_causes.append({"cause_code": "LOGISTICS_TRANSIT_DELAY", "rank": 1})
-                responsible_parties.append(
-                    {"party_type": "logistics_provider", "party_id": "carrier_partner"}
-                )
-                case_status = "no_action" if shipment.is_delivered else "action_required"
-                resolution_actions.extend(["log_carrier_service_breach", "notify_customer"])
+        elif (target_claim == "late_delivery_seller" and is_late_seller) or (
+            target_claim is None and is_late_seller
+        ):
+            primary_issue = "late_delivery_seller"
+            ranked_causes.append({"cause_code": "SELLER_HANDOFF_DELAY", "rank": 1})
+            responsible_parties.append({"party_type": "seller", "party_id": seller_id})
+            case_status = "action_required"
+            resolution_actions.extend(["issue_seller_warning", "notify_customer"])
 
-        elif payment.has_payment_records and abs(
-            payment.total_paid_brl - order.total_order_value_brl
-        ) > Decimal("0.05"):
+        elif (target_claim == "late_delivery_logistics" and is_late_logistics) or (
+            target_claim is None and is_late_logistics
+        ):
+            primary_issue = "late_delivery_logistics"
+            ranked_causes.append({"cause_code": "LOGISTICS_TRANSIT_DELAY", "rank": 1})
+            responsible_parties.append(
+                {"party_type": "logistics_provider", "party_id": "carrier_partner"}
+            )
+            case_status = "no_action" if shipment.is_delivered else "action_required"
+            resolution_actions.extend(["log_carrier_service_breach", "notify_customer"])
+
+        elif (target_claim == "payment_mismatch" and is_payment_mismatch) or (
+            target_claim is None and is_payment_mismatch
+        ):
             primary_issue = "payment_mismatch"
             case_status = "action_required"
             ranked_causes.append({"cause_code": "ORDER_PAYMENT_MISMATCH", "rank": 1})
             responsible_parties.append({"party_type": "platform", "party_id": "checkout_service"})
             resolution_actions.extend(["reconcile_order_ledger", "notify_support"])
 
-        elif payment.is_split_payment:
+        elif (target_claim == "valid_split_payment" and is_valid_split) or (
+            target_claim is None and is_valid_split
+        ):
+            primary_issue = "valid_split_payment"
+            case_status = "no_action"
+            ranked_causes.append({"cause_code": "CUSTOMER_SPLIT_PAYMENT_PLAN", "rank": 1})
+            responsible_parties.append({"party_type": "customer", "party_id": None})
+            resolution_actions.append("explain_payment_breakdown")
+
+        # If customer claimed unsupported_claim or their claimed issue was not proven
+        elif target_claim is not None:
+            primary_issue = "unsupported_claim"
+            case_status = "no_action"
+            ranked_causes.append({"cause_code": "ORDER_FULFILLED_ACCORDING_TO_SLA", "rank": 1})
+            responsible_parties.append({"party_type": "customer", "party_id": None})
+            resolution_actions.append("confirm_order_status_satisfactory")
+
+        # Fallback only when target_claim is None
+        elif is_canceled_paid:
+            primary_issue = "canceled_order_paid"
+            case_status = "action_required"
+            ranked_causes.append({"cause_code": "ORDER_CANCELED_BEFORE_FULFILLMENT", "rank": 1})
+            responsible_parties.append({"party_type": "platform", "party_id": "marketplace"})
+            recommended_refund = payment.total_paid_brl
+            refund_lines.append(
+                RefundLine("order_canceled_refund", payment.total_paid_brl, order_id)
+            )
+            resolution_actions.extend(["process_full_refund", "notify_customer"])
+
+        elif is_unavailable_paid:
+            primary_issue = "unavailable_order_paid"
+            case_status = "action_required"
+            ranked_causes.append({"cause_code": "INVENTORY_OUT_OF_STOCK", "rank": 1})
+            responsible_parties.append({"party_type": "seller", "party_id": seller_id})
+            recommended_refund = payment.total_paid_brl
+            refund_lines.append(
+                RefundLine("inventory_unavailable_refund", payment.total_paid_brl, order_id)
+            )
+            resolution_actions.extend(["process_full_refund", "notify_seller_inventory"])
+
+        elif is_duplicate_charge:
+            primary_issue = "duplicate_charge"
+            case_status = "action_required"
+            ranked_causes.append({"cause_code": "PAYMENT_GATEWAY_DUPLICATION", "rank": 1})
+            responsible_parties.append(
+                {"party_type": "payment_provider", "party_id": "payment_processor"}
+            )
+            recommended_refund = payment.duplicate_amount_brl
+            refund_lines.append(
+                RefundLine("duplicate_charge_reversal", payment.duplicate_amount_brl, order_id)
+            )
+            resolution_actions.extend(["reverse_duplicate_charge", "notify_customer"])
+
+        elif is_refund_failed:
+            primary_issue = "refund_failed"
+            case_status = "action_required"
+            ranked_causes.append({"cause_code": "REFUND_GATEWAY_REJECTED", "rank": 1})
+            responsible_parties.append({"party_type": "payment_provider", "party_id": "acquirer"})
+            refund_val = payment.refund_amount_brl or payment.total_paid_brl
+            recommended_refund = refund_val
+            refund_lines.append(RefundLine("retry_failed_refund", refund_val, order_id))
+            resolution_actions.extend(["retry_refund_transaction", "notify_customer"])
+
+        elif is_refund_pending:
+            primary_issue = "refund_pending"
+            case_status = "no_action"
+            ranked_causes.append({"cause_code": "REFUND_PROCESSING_SLA", "rank": 1})
+            responsible_parties.append({"party_type": "platform", "party_id": "marketplace"})
+            resolution_actions.append("advise_customer_banking_sla")
+
+        elif is_late_seller:
+            primary_issue = "late_delivery_seller"
+            ranked_causes.append({"cause_code": "SELLER_HANDOFF_DELAY", "rank": 1})
+            responsible_parties.append({"party_type": "seller", "party_id": seller_id})
+            case_status = "action_required"
+            resolution_actions.extend(["issue_seller_warning", "notify_customer"])
+
+        elif is_late_logistics:
+            primary_issue = "late_delivery_logistics"
+            ranked_causes.append({"cause_code": "LOGISTICS_TRANSIT_DELAY", "rank": 1})
+            responsible_parties.append(
+                {"party_type": "logistics_provider", "party_id": "carrier_partner"}
+            )
+            case_status = "no_action" if shipment.is_delivered else "action_required"
+            resolution_actions.extend(["log_carrier_service_breach", "notify_customer"])
+
+        elif is_payment_mismatch:
+            primary_issue = "payment_mismatch"
+            case_status = "action_required"
+            ranked_causes.append({"cause_code": "ORDER_PAYMENT_MISMATCH", "rank": 1})
+            responsible_parties.append({"party_type": "platform", "party_id": "checkout_service"})
+            resolution_actions.extend(["reconcile_order_ledger", "notify_support"])
+
+        elif is_valid_split:
             primary_issue = "valid_split_payment"
             case_status = "no_action"
             ranked_causes.append({"cause_code": "CUSTOMER_SPLIT_PAYMENT_PLAN", "rank": 1})
@@ -204,9 +338,8 @@ class PolicySpecialistAgent:
                 verdict = "insufficient_evidence"
             elif primary_issue == "unsupported_claim":
                 verdict = "unsupported"
-            elif (
-                ("late_delivery" in topic and "late_delivery" in primary_issue)
-                or ("refund" in topic and "refund" in primary_issue)
+            elif ("late_delivery" in topic and "late_delivery" in primary_issue) or (
+                "refund" in topic and "refund" in primary_issue
             ):
                 verdict = "partially_supported"
             else:

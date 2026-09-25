@@ -63,9 +63,12 @@ class ScopedEvidenceGateway:
                     )
                     await asyncio.sleep(backoff_seconds)
                 else:
-                    logger.error(
-                        f"MCP tool '{tool_name}' failed after {max_retries + 1} attempts: {exc}"
-                    )
+                    if max_retries > 0:
+                        logger.warning(
+                            f"MCP tool '{tool_name}' failed after {max_retries + 1} attempts: {exc}"
+                        )
+                    else:
+                        logger.debug(f"MCP tool '{tool_name}' returned error: {exc}")
 
         raise RuntimeError(
             f"MCP call '{tool_name}' failed for agent '{self.agent_name}': {last_error}"

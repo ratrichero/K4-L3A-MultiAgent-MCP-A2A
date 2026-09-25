@@ -71,13 +71,21 @@ class ShipmentSpecialistAgent:
             finding.order_status = ship_data.get("order_status")
 
             shipping_limits = ship_data.get("shipping_limits", [])
-            shipping_limit = ship_data.get("shipping_limit_at") or ship_data.get("shipping_limit_date")
+            shipping_limit = ship_data.get("shipping_limit_at") or ship_data.get(
+                "shipping_limit_date"
+            )
             if not shipping_limit and shipping_limits:
                 shipping_limit = shipping_limits[0].get("shipping_limit_at")
 
-            carrier_pickup = ship_data.get("delivered_carrier_at") or ship_data.get("order_delivered_carrier_date")
-            estimated_del = ship_data.get("estimated_delivery_at") or ship_data.get("order_estimated_delivery_date")
-            delivered_cust = ship_data.get("delivered_customer_at") or ship_data.get("order_delivered_customer_date")
+            carrier_pickup = ship_data.get("delivered_carrier_at") or ship_data.get(
+                "order_delivered_carrier_date"
+            )
+            estimated_del = ship_data.get("estimated_delivery_at") or ship_data.get(
+                "order_estimated_delivery_date"
+            )
+            delivered_cust = ship_data.get("delivered_customer_at") or ship_data.get(
+                "order_delivered_customer_date"
+            )
 
             finding.shipping_limit_date = shipping_limit
             finding.carrier_delivered_date = carrier_pickup
@@ -89,15 +97,6 @@ class ShipmentSpecialistAgent:
             if s_ids:
                 finding.seller_ids = sorted(set(finding.seller_ids + s_ids))
 
-            # Check explicit events (authoritative)
-            events = ship_data.get("events", [])
-            for ev in events:
-                if ev.get("event_type") == "delivered_late":
-                    finding.is_late_delivery = True
-                    actor = ev.get("actor")
-                    if actor in ("seller", "logistics_provider"):
-                        finding.late_responsible_party = actor
-
             dt_limit = _parse_iso(shipping_limit)
             dt_carrier = _parse_iso(carrier_pickup)
             dt_est = _parse_iso(estimated_del)
@@ -107,6 +106,15 @@ class ShipmentSpecialistAgent:
                 finding.is_delivered = True
                 if dt_est and dt_del > dt_est:
                     finding.is_late_delivery = True
+                    # Check explicit events for responsible actor
+                    events = ship_data.get("events", [])
+                    for ev in events:
+                        if ev.get("event_type") == "delivered_late":
+                            actor = ev.get("actor")
+                            if actor in ("seller", "logistics_provider"):
+                                finding.late_responsible_party = actor
+                                break
+
                     if not finding.late_responsible_party:
                         # Check if seller was late in preparing
                         if dt_limit and dt_carrier and dt_carrier > dt_limit:
