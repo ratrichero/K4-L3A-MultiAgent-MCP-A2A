@@ -67,7 +67,7 @@ case và kết thúc bằng `handoff`, nên không có vòng lặp. Thứ tự o
 
 | Failure | Retry? | Fallback | Trace/behavior |
 | --- | --- | --- | --- |
-| MCP timeout/transient error | Không tự retry trong một run | Bỏ tool, giảm evidence | Handoff ghi số failures |
+| MCP timeout/read/network error | Tối đa 3 retry, chờ 2/4/8 giây và tạo connection mới | Dừng run sau lần thử cuối | Giữ trace các attempt để audit |
 | Not found | Không | Tiếp tục bằng evidence còn lại | Handoff ghi số failures |
 | 401/403 hoặc scope violation | Không | Không tạo output | Fail run ngay lập tức |
 | Source conflict | Không tự chọn dữ liệu customer | Ưu tiên authoritative MCP | `data_conflicts` khi rule nhận diện được |
@@ -92,6 +92,7 @@ output là `insufficient_evidence`, confidence 0 và không có evidence ref gi�
 - Python 3.11+, dependency ranges được khai báo trong `pyproject.toml`;
 - workflow không dùng model, random seed hoặc clock để ra quyết định nghiệp vụ;
 - xử lý case tuần tự theo thứ tự trong `case-set.json`;
+- `day09 run` giữ output/trace cũ và bỏ qua output đã hợp lệ để hỗ trợ resume;
 - tool discovery được cache trong một MCP session;
 - chạy: `day09 run`, kiểm tra: `pytest -q`, `ruff check src tests`, `day09 validate`;
 - API key chỉ đọc từ `.env`, không ghi vào output, trace hoặc package.
