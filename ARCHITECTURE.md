@@ -26,7 +26,7 @@ phải ground truth.
 | Actor | Input | Trách nhiệm | Tool/domain được phép | Output/handoff |
 | --- | --- | --- | --- | --- |
 | Coordinator | Case, tool schemas | Phân công, giữ correlation `case_id` | Không gọi data tool | Task envelope |
-| Order/item | Order/item/seller IDs | Trạng thái order, item, seller, giá và SLA gửi hàng | `order`, `item`, `product`, `seller` | Evidence records |
+| Order/item | Order/item/seller/customer IDs | Trạng thái order, item, seller, customer history, giá và SLA gửi hàng | `order`, `item`, `product`, `seller`, `customer` | Evidence records |
 | Payment | Order/payment refs | Thanh toán, duplicate, refund | `payment`, `refund` | Evidence records |
 | Shipment | Order/shipment IDs | Mốc giao hàng và trách nhiệm logistics | `shipment` | Evidence records |
 | Policy | Primary issue sơ bộ | Chính sách áp dụng cho issue | `policy` | Evidence records |
@@ -45,8 +45,9 @@ case và kết thúc bằng `handoff`, nên không có vòng lặp. Thứ tự o
 2. `task_assigned`;
 3. zero hoặc nhiều `tool_result_consumed`;
 4. `handoff`;
-5. `verification_completed`;
-6. `case_finalized`.
+5. `policy_decided` khi có policy evidence;
+6. `verification_completed`;
+7. `case_finalized`.
 
 ## 4. Evidence lifecycle
 

@@ -12,7 +12,7 @@ from .mcp_gateway import EvidenceGateway, ToolDefinition
 from .trace import TraceWriter
 
 ENTITY_KEYS = {
-    "order_ids": {"order_id", "order_ids"},
+    "order_ids": {"order_id", "order_ids", "claimed_order_id"},
     "item_ids": {"item_id", "item_ids", "order_item_id", "order_item_ids"},
     "seller_ids": {"seller_id", "seller_ids"},
     "payment_references": {
@@ -24,6 +24,12 @@ ENTITY_KEYS = {
         "payment_references",
     },
     "shipment_ids": {"shipment_id", "shipment_ids", "tracking_id", "tracking_ids"},
+}
+
+LOOKUP_KEYS = {
+    **ENTITY_KEYS,
+    "customer_unique_ids": {"customer_unique_id", "customer_unique_ids"},
+    "policy_versions": {"policy_version"},
 }
 
 ARGUMENT_ENTITY = {
@@ -41,10 +47,13 @@ ARGUMENT_ENTITY = {
     "shipment_id": "shipment_ids",
     "shipment_ids": "shipment_ids",
     "tracking_id": "shipment_ids",
+    "customer_unique_id": "customer_unique_ids",
+    "customer_unique_ids": "customer_unique_ids",
+    "policy_version": "policy_versions",
 }
 
 DOMAIN_ACTORS = {
-    "order-item-agent": frozenset({"order", "item", "product", "seller"}),
+    "order-item-agent": frozenset({"order", "item", "product", "seller", "customer"}),
     "payment-agent": frozenset({"payment", "refund"}),
     "shipment-agent": frozenset({"shipment"}),
     "policy-agent": frozenset({"policy"}),
@@ -84,9 +93,9 @@ def _unique(values: Iterable[str], limit: int = 20) -> list[str]:
 
 
 def _entity_context(value: Any) -> dict[str, list[str]]:
-    found: dict[str, list[str]] = {name: [] for name in ENTITY_KEYS}
+    found: dict[str, list[str]] = {name: [] for name in LOOKUP_KEYS}
     for key, child in _walk(value):
-        for entity_name, aliases in ENTITY_KEYS.items():
+        for entity_name, aliases in LOOKUP_KEYS.items():
             if key in aliases:
                 found[entity_name].extend(_strings(child))
     return {name: _unique(values) for name, values in found.items()}
@@ -99,7 +108,17 @@ def _merge_context(target: dict[str, list[str]], value: Any) -> None:
 
 def _tool_domain(tool: ToolDefinition) -> str | None:
     text = f"{tool.name} {tool.description}".lower()
-    for domain in ("refund", "payment", "shipment", "policy", "seller", "product", "item", "order"):
+    for domain in (
+        "refund",
+        "payment",
+        "shipment",
+        "policy",
+        "seller",
+        "product",
+        "item",
+        "customer",
+        "order",
+    ):
         if domain in text:
             return domain
     return None
@@ -220,35 +239,55 @@ class SpecialistAgent:
             attributes={"candidate_tools": len(candidates)},
         )
         consumed = skipped = failures = 0
-        for tool in candidates:
-            arguments = _tool_arguments(tool, context, issue)
-            if arguments is None:
-                skipped += 1
-                continue
-            try:
-                evidence = await gateway.call(tool.name, case_id=case_id, **arguments)
-            except RuntimeError as exc:
-                message = str(exc).lower()
-                if any(token in message for token in ("403", "forbidden", "unauthorized")):
-                    raise
-                failures += 1
-                continue
-            record = ledger.consume(
-                evidence,
-                tool_name=tool.name,
-                actor=self.name,
-                allowed_domains=self.domains,
-            )
+        consumed_refs: list[str] = []
+        pending = candidates
+        while pending:
+            deferred: list[ToolDefinition] = []
+            attempted = 0
+            for tool in pending:
+                arguments = _tool_arguments(tool, context, issue)
+                if arguments is None:
+                    deferred.append(tool)
+                    continue
+                attempted += 1
+                try:
+                    evidence = await gateway.call(tool.name, case_id=case_id, **arguments)
+                except RuntimeError as exc:
+                    message = str(exc).lower()
+                    if any(token in message for token in ("403", "forbidden", "unauthorized")):
+                        raise
+                    failures += 1
+                    continue
+                record = ledger.consume(
+                    evidence,
+                    tool_name=tool.name,
+                    actor=self.name,
+                    allowed_domains=self.domains,
+                )
+                trace.emit(
+                    case_id=case_id,
+                    event_type="tool_result_consumed",
+                    actor=self.name,
+                    tool_name=tool.name,
+                    evidence_refs=[record.evidence_ref],
+                    attributes={"domain": record.domain},
+                )
+                _merge_context(context, record.data)
+                consumed_refs.append(record.evidence_ref)
+                consumed += 1
+            if attempted == 0:
+                skipped += len(deferred)
+                break
+            pending = deferred
+        if self.name == "policy-agent" and consumed_refs:
             trace.emit(
                 case_id=case_id,
-                event_type="tool_result_consumed",
+                event_type="policy_decided",
                 actor=self.name,
-                tool_name=tool.name,
-                evidence_refs=[record.evidence_ref],
-                attributes={"domain": record.domain},
+                target="coordinator",
+                decision_code="POLICY_EVALUATED",
+                evidence_refs=consumed_refs,
             )
-            _merge_context(context, record.data)
-            consumed += 1
         trace.emit(
             case_id=case_id,
             event_type="handoff",
@@ -467,7 +506,8 @@ def _assess(ledger: EvidenceLedger) -> Assessment:
 
 def _claim_ids(case: Mapping[str, Any]) -> list[str]:
     values: list[str] = []
-    claims = case.get("claims", case.get("claim_assessments", []))
+    customer_request = case.get("customer_request", {})
+    claims = customer_request.get("claims", []) if isinstance(customer_request, Mapping) else []
     if isinstance(claims, list):
         for index, claim in enumerate(claims, 1):
             if isinstance(claim, Mapping):
@@ -515,7 +555,7 @@ def _build_output(
             "case_status": assessment.status,
             "confidence": assessment.confidence,
         },
-        "affected_entities": {name: list(values) for name, values in context.items()},
+        "affected_entities": {name: list(context.get(name, [])) for name in ENTITY_KEYS},
         "root_cause_analysis": {
             "ranked_causes": [{"cause_code": assessment.cause, "rank": 1}],
             "responsible_parties": [{"party_type": assessment.party_type, "party_id": party_id}],

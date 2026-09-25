@@ -29,6 +29,11 @@ class TraceWriter:
         evidence_refs: list[str] | None = None,
         attributes: dict[str, str | int | float | bool | None] | None = None,
     ) -> dict[str, Any]:
+        if event_type == "tool_result_consumed":
+            if not tool_name:
+                raise ValueError("tool_result_consumed requires tool_name")
+            if not evidence_refs:
+                raise ValueError("tool_result_consumed requires at least one evidence_ref")
         event: dict[str, Any] = {
             "schema_version": "day09-trace-event-v1",
             "event_id": f"evt_{secrets.token_urlsafe(18)}",

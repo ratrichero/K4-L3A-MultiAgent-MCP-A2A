@@ -82,6 +82,14 @@ def validate_artifacts(
         seen_events.add(event["event_id"])
         events_by_case[event["case_id"]].append(event)
         if event["event_type"] == "tool_result_consumed":
+            if not event.get("tool_name"):
+                raise ValueError(
+                    f"traces/trace.jsonl:{number}: tool_result_consumed requires tool_name"
+                )
+            if not event.get("evidence_refs"):
+                raise ValueError(
+                    f"traces/trace.jsonl:{number}: tool_result_consumed requires evidence_refs"
+                )
             for evidence_ref in event["evidence_refs"]:
                 owner = evidence_owner.setdefault(evidence_ref, event["case_id"])
                 if owner != event["case_id"]:
