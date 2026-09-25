@@ -19,9 +19,9 @@ class Settings:
     gemini_api_key: str | None = None
     openai_api_key: str | None = None
     openai_base_url: str | None = None
-    primary_model: str = "gemini-2.5-flash"
-    fallback_model_1: str = "gemini-2.0-flash"
-    fallback_model_2: str = "gpt-4o-mini"
+    primary_model: str = "gemini-1.5-flash-8b"
+    fallback_model_1: str = "gemma-2-9b-it"
+    fallback_model_2: str = "qwen2.5-7b-instruct"
     llm_timeout: float = 60.0
     llm_temperature: float = 0.1
 
@@ -45,9 +45,9 @@ class Settings:
         gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip() or None
         openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
         openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
-        primary_model = os.getenv("PRIMARY_MODEL", "gemini-2.5-flash").strip()
-        fallback_model_1 = os.getenv("FALLBACK_MODEL_1", "gemini-2.0-flash").strip()
-        fallback_model_2 = os.getenv("FALLBACK_MODEL_2", "gpt-4o-mini").strip()
+        primary_model = os.getenv("PRIMARY_MODEL", "gemini-1.5-flash-8b").strip()
+        fallback_model_1 = os.getenv("FALLBACK_MODEL_1", "gemma-2-9b-it").strip()
+        fallback_model_2 = os.getenv("FALLBACK_MODEL_2", "qwen2.5-7b-instruct").strip()
 
         try:
             llm_timeout = float(os.getenv("LLM_TIMEOUT", "60.0").strip())

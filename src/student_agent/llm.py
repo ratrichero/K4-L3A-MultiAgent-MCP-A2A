@@ -17,11 +17,11 @@ def clean_json_text(text: str) -> str:
     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", stripped, re.IGNORECASE)
     if match:
         stripped = match.group(1).strip()
-    
+
     # In case there's still text before the first '{' or '[' and after the last '}' or ']'
     start_brace = stripped.find("{")
     start_bracket = stripped.find("[")
-    
+
     if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
         end_brace = stripped.rfind("}")
         if end_brace != -1:
@@ -30,7 +30,7 @@ def clean_json_text(text: str) -> str:
         end_bracket = stripped.rfind("]")
         if end_bracket != -1:
             stripped = stripped[start_bracket : end_bracket + 1]
-            
+
     return stripped
 
 
@@ -53,6 +53,7 @@ class LLMClient:
             raise ValueError("GEMINI_API_KEY is not configured in .env")
         if self._gemini_client is None:
             from google import genai
+
             self._gemini_client = genai.Client(api_key=self.settings.gemini_api_key)
         return self._gemini_client
 
@@ -61,6 +62,7 @@ class LLMClient:
             raise ValueError("OPENAI_API_KEY is not configured in .env")
         if self._openai_client is None:
             from openai import AsyncOpenAI
+
             self._openai_client = AsyncOpenAI(
                 api_key=self.settings.openai_api_key,
                 base_url=self.settings.openai_base_url,
@@ -71,9 +73,12 @@ class LLMClient:
     def _detect_provider(self, model: str) -> str:
         """Infer provider ('gemini' or 'openai') based on model name."""
         lowered = model.lower()
-        if "gemini" in lowered:
+        if any(g in lowered for g in ("gemini", "gemma")):
             return "gemini"
-        if any(prefix in lowered for prefix in ("gpt", "o1", "o3", "o4", "text-", "chatgpt")):
+        if any(
+            prefix in lowered
+            for prefix in ("gpt", "o1", "o3", "o4", "text-", "chatgpt", "qwen", "llama", "mistral")
+        ):
             return "openai"
         # Default fallback: check configured keys
         if self.settings.gemini_api_key and not self.settings.openai_api_key:
@@ -88,9 +93,7 @@ class LLMClient:
             ("Fallback-2", self.settings.fallback_model_2),
         ]
         return [
-            (tier_name, model, self._detect_provider(model))
-            for tier_name, model in models
-            if model
+            (tier_name, model, self._detect_provider(model)) for tier_name, model in models if model
         ]
 
     async def _call_gemini(
@@ -199,7 +202,10 @@ class LLMClient:
         system_prompt: str | None = None,
         temperature: float | None = None,
     ) -> dict[str, Any]:
-        """Generate structured JSON response with code fence stripping and validation."""
+        """Generate structured JSON response with multi-tier fallback.
+
+        Falls back across models on both API errors and JSON parsing errors.
+        """
         json_instruction = (
             "Respond ONLY with a valid JSON object matching the requested specification. "
             "Do NOT include markdown fences or explanatory text."
@@ -208,18 +214,48 @@ class LLMClient:
             f"{system_prompt}\n\n{json_instruction}" if system_prompt else json_instruction
         )
 
-        raw_text = await self.generate_text(
-            prompt=prompt,
-            system_prompt=effective_system,
-            temperature=temperature,
-            json_mode=True,
-        )
+        tiers = self.get_tiers()
+        errors: list[str] = []
 
-        cleaned = clean_json_text(raw_text)
-        try:
-            parsed = json.loads(cleaned)
-            if not isinstance(parsed, dict):
-                raise ValueError(f"Expected a JSON object, got {type(parsed).__name__}")
-            return parsed
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Failed to parse JSON response: {exc}\nRaw text: {raw_text}") from exc
+        for tier_name, model, provider in tiers:
+            try:
+                logger.info(f"Invoking LLM JSON [{tier_name}]: provider={provider}, model={model}")
+                if provider == "gemini":
+                    raw_text = await self._call_gemini(
+                        model=model,
+                        prompt=prompt,
+                        system_prompt=effective_system,
+                        json_mode=True,
+                        temperature=temperature,
+                    )
+                elif provider == "openai":
+                    raw_text = await self._call_openai(
+                        model=model,
+                        prompt=prompt,
+                        system_prompt=effective_system,
+                        json_mode=True,
+                        temperature=temperature,
+                    )
+                else:
+                    raise ValueError(f"Unknown provider: {provider}")
+
+                if not raw_text:
+                    raise ValueError(f"Empty response from {model}")
+
+                cleaned = clean_json_text(raw_text)
+                parsed = json.loads(cleaned)
+                if not isinstance(parsed, dict):
+                    raise ValueError(f"Expected a JSON object, got {type(parsed).__name__}")
+                return parsed
+
+            except Exception as exc:
+                err_msg = (
+                    f"[{tier_name}] provider={provider}, model={model} failed (call/parse): {exc}"
+                )
+                logger.warning(err_msg)
+                errors.append(err_msg)
+
+        raise RuntimeError(
+            "All LLM tiers (Primary and 2 Fallbacks) failed to produce valid JSON:\n"
+            + "\n".join(f" - {err}" for err in errors)
+        )
