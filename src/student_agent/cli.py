@@ -27,7 +27,12 @@ async def _show_tools(root: Path) -> None:
             print(tool)
 
 
-async def _run(root: Path) -> None:
+async def _run(
+    root: Path,
+    resume: bool = False,
+    start_from: str | None = None,
+    single_case: str | None = None,
+) -> None:
     settings = Settings.load(root)
     case_set = load_case_set(root)
     contracts = Contracts(root / "contracts" / "schemas")
@@ -35,9 +40,45 @@ async def _run(root: Path) -> None:
     trace_path = root / "traces" / "trace.jsonl"
     output_root.mkdir(parents=True, exist_ok=True)
     trace_path.parent.mkdir(parents=True, exist_ok=True)
-    for stale in output_root.glob("*.json"):
-        stale.unlink()
-    trace_path.unlink(missing_ok=True)
+
+    is_resume_mode = resume or (start_from is not None) or (single_case is not None)
+
+    all_case_ids = list(case_set.case_ids)
+    if single_case:
+        if single_case not in case_set.cases:
+            raise ValueError(f"Unknown case_id: {single_case}")
+        target_case_ids = [single_case]
+    elif start_from:
+        if start_from not in case_set.cases:
+            raise ValueError(f"Unknown start-from case_id: {start_from}")
+        start_idx = all_case_ids.index(start_from)
+        target_case_ids = all_case_ids[start_idx:]
+    else:
+        target_case_ids = all_case_ids
+
+    # In fresh run, clear stale output and trace files
+    if not is_resume_mode:
+        for stale in output_root.glob("*.json"):
+            stale.unlink()
+        trace_path.unlink(missing_ok=True)
+    else:
+        # In resume mode, clean up any partial trace events for cases we are about to re-run
+        target_set = set(target_case_ids)
+        if trace_path.exists():
+            valid_lines: list[str] = []
+            for line in trace_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    ev = json.loads(line)
+                    if ev.get("case_id") not in target_set:
+                        valid_lines.append(line)
+                except Exception:
+                    continue
+            trace_path.write_text(
+                "\n".join(valid_lines) + ("\n" if valid_lines else ""), encoding="utf-8"
+            )
+
     trace = TraceWriter(trace_path, contracts)
 
     async with connect_gateway(settings.mcp_endpoint, settings.team_api_key, contracts) as gw_check:
@@ -45,12 +86,34 @@ async def _run(root: Path) -> None:
         if not discovered_tools:
             raise RuntimeError("MCP Gateway returned no tools")
         print(f"Connected to MCP Gateway. Discovered {len(discovered_tools)} tools.")
-        print(f"Starting execution of {len(case_set.case_ids)} cases...\n")
 
-    total_cases = len(case_set.case_ids)
-    for idx, case_id in enumerate(case_set.case_ids, 1):
+    total_all = len(all_case_ids)
+    mode_desc = "Resume" if is_resume_mode else "Fresh run"
+    print(f"Workflow active: {len(target_case_ids)} cases to execute (Mode: {mode_desc}).\n")
+
+    for case_id in target_case_ids:
+        idx = all_case_ids.index(case_id) + 1
+        target_file = output_root / f"{case_id}.json"
+
+        # If --resume flag was used without start_from/single_case,
+        # skip if valid output already exists
+        if resume and not start_from and not single_case and target_file.exists():
+            try:
+                existing_data = json.loads(target_file.read_text(encoding="utf-8"))
+                contracts.validate_output(existing_data, f"outputs/{case_id}.json")
+                issue = existing_data.get("assessment", {}).get("primary_issue")
+                refund = existing_data.get("financial_resolution", {}).get(
+                    "recommended_refund_brl", 0.0
+                )
+                print(
+                    f"[{idx:>3}/{total_all}] Skipping {case_id} (completed: {issue}, {refund} BRL)"
+                )
+                continue
+            except Exception:
+                pass
+
         case = case_set.cases[case_id]
-        print(f"[{idx:>3}/{total_cases}] Processing {case_id}...", end="", flush=True)
+        print(f"[{idx:>3}/{total_all}] Processing {case_id}...", end="", flush=True)
         trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
 
         output = None
@@ -64,7 +127,7 @@ async def _run(root: Path) -> None:
             except Exception as exc:
                 if attempt < 2:
                     print(
-                        f"\n      [Retry {attempt + 1}/3] {case_id} error: {exc}. Retrying in 2s...",
+                        f"\n      [Retry {attempt + 1}/3] {case_id}: {exc}. Retrying in 2s...",
                         flush=True,
                     )
                     await asyncio.sleep(2.0)
@@ -88,7 +151,9 @@ async def _run(root: Path) -> None:
         print(f" -> {issue} | refund: {refund} BRL | {refs} refs | OK", flush=True)
         await asyncio.sleep(0.3)
 
-    print(f"\nAll {total_cases} cases completed successfully!")
+    print(
+        f"\nExecution finished! Total outputs: {len(list(output_root.glob('*.json')))}/{total_all}"
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -97,7 +162,14 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("validate-inputs", help="validate case-set.json and all 100 inputs")
     commands.add_parser("mcp-tools", help="authenticate and list discovered MCP tools")
-    commands.add_parser("run", help="run the implemented workflow for all cases")
+    run_cmd = commands.add_parser("run", help="run the implemented workflow for all cases")
+    run_cmd.add_argument(
+        "--resume", action="store_true", help="resume execution, skipping existing valid outputs"
+    )
+    run_cmd.add_argument(
+        "--start-from", help="start execution from a specific case_id (e.g. L3A_CASE_017)"
+    )
+    run_cmd.add_argument("--case", help="run only a single specific case_id (e.g. L3A_CASE_017)")
     commands.add_parser("validate", help="validate outputs and observable trace")
     package = commands.add_parser("package", help="validate and build the submission ZIP")
     package.add_argument("--output", default="dist/submission.zip")
@@ -116,7 +188,14 @@ def main() -> None:
         elif args.command == "mcp-tools":
             asyncio.run(_show_tools(root))
         elif args.command == "run":
-            asyncio.run(_run(root))
+            asyncio.run(
+                _run(
+                    root,
+                    resume=args.resume,
+                    start_from=args.start_from,
+                    single_case=args.case,
+                )
+            )
         elif args.command == "validate":
             case_set = load_case_set(root)
             contracts = Contracts(root / "contracts" / "schemas")
