@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import httpx2
+
 from .cases import load_case_set
 from .config import Settings
 from .contracts import Contracts
@@ -19,8 +21,30 @@ def _root(value: str) -> Path:
     return Path(value).resolve()
 
 
+async def _ensure_competition_run(settings: Settings) -> None:
+    """Ensure an active run session exists on the competition server for this team."""
+    candidates = [
+        settings.competition_api_url.rstrip("/"),
+        "https://day09-competition.34-142-201-239.sslip.io",
+    ]
+    headers = {
+        "Authorization": f"Bearer {settings.team_api_key}",
+        "Content-Type": "application/json",
+    }
+    for base in candidates:
+        try:
+            url = f"{base}/api/v2/runs"
+            async with httpx2.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, headers=headers, json={"variant_id": "l3a"})
+                if resp.status_code in (200, 201):
+                    return
+        except Exception:
+            continue
+
+
 async def _show_tools(root: Path) -> None:
     settings = Settings.load(root)
+    await _ensure_competition_run(settings)
     contracts = Contracts(root / "contracts" / "schemas")
     async with connect_gateway(settings.mcp_endpoint, settings.team_api_key, contracts) as gateway:
         for tool in await gateway.list_tools():
@@ -34,6 +58,7 @@ async def _run(
     single_case: str | None = None,
 ) -> None:
     settings = Settings.load(root)
+    await _ensure_competition_run(settings)
     case_set = load_case_set(root)
     contracts = Contracts(root / "contracts" / "schemas")
     output_root = root / "outputs"
@@ -130,6 +155,7 @@ async def _run(
                         f"\n      [Retry {attempt + 1}/3] {case_id}: {exc}. Retrying in 2s...",
                         flush=True,
                     )
+                    await _ensure_competition_run(settings)
                     await asyncio.sleep(2.0)
                 else:
                     raise
