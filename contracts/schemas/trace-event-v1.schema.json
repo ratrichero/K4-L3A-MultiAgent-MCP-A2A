@@ -36,5 +36,31 @@
       "maxProperties": 20,
       "additionalProperties": {"type": ["string", "number", "integer", "boolean", "null"]}
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"event_type": {"const": "tool_result_consumed"}},
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["tool_name", "evidence_refs"],
+        "properties": {"evidence_refs": {"minItems": 1}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"event_type": {"const": "task_assigned"}},
+        "required": ["event_type"]
+      },
+      "then": {"required": ["target"]}
+    },
+    {
+      "if": {
+        "properties": {"event_type": {"const": "handoff"}},
+        "required": ["event_type"]
+      },
+      "then": {"required": ["target"]}
+    }
+  ]
 }

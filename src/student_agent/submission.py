@@ -65,6 +65,8 @@ def validate_artifacts(
         raise ValueError("traces/trace.jsonl is missing or not UTF-8") from exc
     normalized_lines: list[str] = []
     seen_events: set[str] = set()
+    events_by_case: dict[str, list[dict[str, Any]]] = {case_id: [] for case_id in case_set.case_ids}
+    evidence_owner: dict[str, str] = {}
     for number, line in enumerate(trace_lines, 1):
         if not line.strip():
             continue
@@ -78,7 +80,47 @@ def validate_artifacts(
         if event["event_id"] in seen_events:
             raise ValueError(f"traces/trace.jsonl:{number}: duplicate event_id")
         seen_events.add(event["event_id"])
+        events_by_case[event["case_id"]].append(event)
+        if event["event_type"] == "tool_result_consumed":
+            for evidence_ref in event["evidence_refs"]:
+                owner = evidence_owner.setdefault(evidence_ref, event["case_id"])
+                if owner != event["case_id"]:
+                    raise ValueError(
+                        f"traces/trace.jsonl:{number}: evidence_ref is consumed across cases"
+                    )
         normalized_lines.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+
+    required_events = {
+        "case_received",
+        "task_assigned",
+        "handoff",
+        "verification_completed",
+        "case_finalized",
+    }
+    for case_id, events in events_by_case.items():
+        event_types = [event["event_type"] for event in events]
+        missing = sorted(required_events - set(event_types))
+        if missing:
+            raise ValueError(f"trace for {case_id} is missing lifecycle events: {missing}")
+        if event_types[0] != "case_received" or event_types[-1] != "case_finalized":
+            raise ValueError(f"trace lifecycle ordering is invalid for {case_id}")
+        if event_types.index("verification_completed") > event_types.index("case_finalized"):
+            raise ValueError(f"verification must precede finalization for {case_id}")
+        consumed_refs = {
+            evidence_ref
+            for event in events
+            if event["event_type"] == "tool_result_consumed"
+            for evidence_ref in event["evidence_refs"]
+        }
+        output_refs = set(outputs[case_id]["evidence_refs"])
+        if not output_refs.issubset(consumed_refs):
+            unknown = sorted(output_refs - consumed_refs)
+            raise ValueError(f"outputs/{case_id}.json contains unconsumed evidence_refs: {unknown}")
+        for claim in outputs[case_id].get("claim_assessments", []):
+            if not set(claim["evidence_refs"]).issubset(output_refs):
+                raise ValueError(
+                    f"outputs/{case_id}.json has claim evidence outside top-level evidence_refs"
+                )
 
     serialized = [json.dumps(value, ensure_ascii=False) for value in outputs.values()]
     if SECRET_PATTERN.search("\n".join([*serialized, *normalized_lines])):
