@@ -78,7 +78,14 @@ class PaymentSpecialistAgent:
                     if inst > max_inst:
                         max_inst = inst
 
-                    ref_id = f"pay_{order_id}_{seq}"
+                    ref_id = None
+                    for key in ("payment_reference", "payment_ref", "payment_id", "id"):
+                        candidate = row.get(key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            ref_id = candidate.strip()
+                            break
+                    if not ref_id:
+                        ref_id = f"pay_{order_id}_{seq}"
                     refs.append(ref_id)
 
                     key = (p_type, round_brl(val))

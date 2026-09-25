@@ -122,7 +122,23 @@ class ShipmentSpecialistAgent:
                         else:
                             finding.late_responsible_party = "logistics_provider"
 
-            finding.shipment_ids = [f"ship_{order_id}"]
+            # Prefer authoritative shipment identifiers from the evidence and
+            # only fall back to a synthetic key when the gateway exposes none.
+            ship_ids: list[str] = []
+            for key in ("shipment_id", "shipment_ref", "tracking_code", "id"):
+                value = ship_data.get(key)
+                if isinstance(value, str) and value.strip():
+                    ship_ids.append(value.strip())
+            shipments = ship_data.get("shipments")
+            if isinstance(shipments, list):
+                for entry in shipments:
+                    if not isinstance(entry, dict):
+                        continue
+                    for key in ("shipment_id", "shipment_ref", "tracking_code", "id"):
+                        value = entry.get(key)
+                        if isinstance(value, str) and value.strip():
+                            ship_ids.append(value.strip())
+            finding.shipment_ids = sorted(set(ship_ids)) or [f"ship_{order_id}"]
 
         except Exception as exc:
             logger.warning(f"[{case_id}] get_shipment_summary failed: {exc}")

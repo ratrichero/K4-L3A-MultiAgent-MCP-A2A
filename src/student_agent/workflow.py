@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -65,8 +66,10 @@ async def solve_case(
 
     # 5. Stage 3: Parallel Domain Specialists (Payment & Shipment)
     if order_finding.found and order_finding.order_id:
-        payment_finding = await payment_agent.investigate(case_id, order_finding.order_id)
-        shipment_finding = await shipment_agent.investigate(case_id, order_finding.order_id)
+        payment_finding, shipment_finding = await asyncio.gather(
+            payment_agent.investigate(case_id, order_finding.order_id),
+            shipment_agent.investigate(case_id, order_finding.order_id),
+        )
     else:
         payment_finding = PaymentFinding()
         shipment_finding = ShipmentFinding()
